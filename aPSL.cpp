@@ -1,14 +1,8 @@
 
-#include <windows.h>
-#include <comdef.h>
-#include <activscp.h>
-#include <tchar.h>
-#include <shlguid.h>
-#include <dispex.h>
+#include <ActivScp.h>
 #include <ComCat.h>
+#include <comdef.h>
 #include <vector>
-#include <string>
-#include <cstdint>
 
 #include "PSL/PSL.h"
 
@@ -18,6 +12,7 @@ HINSTANCE hInst;
 #define APSL_TRACE(x)
 #define PACKAGE_NAME "aPSL"
 #define IID_APSL "{B7BCEFC5-FD47-4986-B418-A6686F9760CC}"
+
 
 namespace aPSL { namespace util {
     
@@ -397,8 +392,8 @@ namespace aPSL {
                 return this->operator [] (key);
             if (SUCCEEDED(hr))
                 return new runtime_callable_wrapper(m_pDispatch, rgDispid);
-            _com_error const e(hr);
-            fwprintf(stderr, L"com error: code=%d message=%s\n", e.Error(), e.ErrorMessage());
+//            _com_error const e(hr);
+//            fwprintf(stderr, L"com error: code=%d message=%s\n", e.Error(), e.ErrorMessage());
             throw std::runtime_error("com error: ");
         }
 
@@ -410,7 +405,7 @@ namespace aPSL {
             HRESULT hr = m_pDispatch->GetIDsOfNames(
                 IID_NULL, &rgszNames, 1, LOCALE_USER_DEFAULT, &rgDispid);
             if (hr != S_OK)
-                throw _com_error(hr);
+                throw (hr);
             VARIANT result = {VT_EMPTY};
             EXCEPINFO excepinfo = {0};
             UINT argerr = 0;
@@ -420,11 +415,11 @@ namespace aPSL {
                 rgDispid, IID_NULL, LOCALE_USER_DEFAULT,
                 DISPATCH_PROPERTYPUT, &params, &result, &excepinfo, &argerr);
             if (FAILED(hr))
-                throw _com_error(hr);
+                throw (hr);
             hr = m_pDispatch->GetIDsOfNames(
                 IID_NULL, &rgszNames, 1, LOCALE_USER_DEFAULT, &rgDispid);
             if (hr != S_OK)
-                throw _com_error(hr);
+                throw (hr);
         }
 
      private:
@@ -665,6 +660,12 @@ class __declspec(novtable) IActiveScriptImpl
         {
         }
 
+        ~IActiveScriptImpl() throw()
+        {
+            if (m_p_scriptsite_object)
+                delete m_p_scriptsite_object;
+        }
+
         STDMETHOD(SetScriptSite)(IActiveScriptSite *pass)
         {
             APSL_TRACE ("IActiveScript::SetScriptSite");
@@ -769,7 +770,7 @@ class __declspec(novtable) IActiveScriptImpl
     public:
         aPSL::scriptsite_object *m_p_scriptsite_object;
         SCRIPTSTATE m_script_state;
-        _com_ptr_t<_com_IIID<IActiveScriptSite, &IID_IActiveScriptSite> > m_ActiveScriptSite;
+        IActiveScriptSite *m_ActiveScriptSite;
         aPSL::script_engine *m_p_script_engine;
 
 };
@@ -1026,23 +1027,55 @@ STDAPI DllGetClassObject(REFCLSID rclsid, REFIID riid, LPVOID* ppv)
 
 //////////////////////////////////////////////////////////////////////////////
 //
+//  @fn     DllUnregisterServer
+//
+STDAPI DllUnregisterServer(VOID)
+{
+    HRESULT hr = S_FALSE;
+    ICatRegister *pCatRegister;
+    hr = CoCreateInstance(
+        CLSID_StdComponentCategoriesMgr, NULL,
+	    CLSCTX_INPROC_SERVER, __uuidof(ICatRegister),
+	    reinterpret_cast<LPVOID*>(&pCatRegister) );
+    if (FAILED(hr) || !pCatRegister)
+	    return E_FAIL;
+    pCatRegister->AddRef();
+    for (CATID const** pEntry = GetCategoryMap(); *pEntry; ++pEntry)
+        if (FAILED(hr = pCatRegister->UnRegisterClassImplCategories(
+            __uuidof(CScriptObject), 1, const_cast<CATID *>(*pEntry))))
+            break;
+    pCatRegister->Release();
+    if (FAILED(hr))
+	    return hr;
+    for (int i = sizeof(g_RegTable)/sizeof(*g_RegTable) - 1; i >= 0; --i)
+        if(RegDeleteKeyA(HKEY_CLASSES_ROOT, g_RegTable[i][0]) != ERROR_SUCCESS)
+            hr = S_FALSE;
+    return S_OK;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+//
 //  @fn     DllRegisterServer
 //
 STDAPI DllRegisterServer(VOID)
 {
     HRESULT hr = S_FALSE;
-    _com_ptr_t<_com_IIID<ICatRegister, &IID_ICatRegister> > pCatRegister;
+    ICatRegister *pCatRegister;
     hr = CoCreateInstance(
         CLSID_StdComponentCategoriesMgr, NULL,
 	    CLSCTX_INPROC_SERVER,
 	    __uuidof(ICatRegister),
 	    reinterpret_cast<void **>(&pCatRegister) );
     if (FAILED(hr))
-	    return E_FAIL;
+	    return hr;
+    pCatRegister->AddRef();
     for (CATID const** pEntry = GetCategoryMap(); *pEntry; ++pEntry)
         if (FAILED(hr = pCatRegister->RegisterClassImplCategories(
             __uuidof(CScriptObject), 1, const_cast<CATID *>(*pEntry))))
-            return hr;
+            break;
+    pCatRegister->Release();
+    if (FAILED(hr))
+	    return hr;
     CHAR szFileName[MAX_PATH] = { 0 };
     GetModuleFileNameA(hInst, szFileName, MAX_PATH);
     for (int i = 0; SUCCEEDED(hr) && i < sizeof(g_RegTable) / sizeof(*g_RegTable); ++i)
@@ -1063,27 +1096,4 @@ STDAPI DllRegisterServer(VOID)
     return S_OK;
 }
 
-//////////////////////////////////////////////////////////////////////////////
-//
-//  @fn     DllUnregisterServer
-//
-STDAPI DllUnregisterServer(VOID)
-{
-    HRESULT hr = S_FALSE;
-    _com_ptr_t<_com_IIID<ICatRegister, &IID_ICatRegister> > pCatRegister;
-    hr = CoCreateInstance(
-        CLSID_StdComponentCategoriesMgr, NULL,
-	    CLSCTX_INPROC_SERVER, __uuidof(ICatRegister),
-	    reinterpret_cast<LPVOID*>(&pCatRegister) );
-    if (FAILED(hr) || !pCatRegister)
-	    return E_FAIL;
-    for (CATID const** pEntry = GetCategoryMap(); *pEntry; ++pEntry)
-        if (FAILED(hr = pCatRegister->UnRegisterClassImplCategories(
-            __uuidof(CScriptObject), 1, const_cast<CATID *>(*pEntry))))
-            return hr;
-    for (int i = sizeof(g_RegTable)/sizeof(*g_RegTable) - 1; i >= 0; --i)
-        if(RegDeleteKeyA(HKEY_CLASSES_ROOT, g_RegTable[i][0]) != ERROR_SUCCESS)
-            hr = S_FALSE;
-    return S_OK;
-}
 

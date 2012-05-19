@@ -12,7 +12,7 @@ CXXFLAGS=/EHsc \
 LDFLAGS=/DLL \
 		/LIBPATH:"$(VSDIR)\Lib" \
 		/LIBPATH:"$(MSSDK)\Lib"
-LIBS=Advapi32.lib
+LIBS=Advapi32.lib comsuppw.lib
 REGSVR=regsvr32.exe
 FILTER=iconv -f SJIS -t UTF-8 | tee build.log
 
